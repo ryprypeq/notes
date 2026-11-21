@@ -5,7 +5,7 @@ Caddy 用認証プラグイン [caddy-security](https://github.com/greenpau/cadd
 - 確認日: 2026-11-21
 - 環境: Linux (cloud container) / Go 1.24.7 / Caddy v2.11.9 / Playwright (Chromium)
 - 作業ディレクトリ: スクラッチパッド `.../scratchpad/cs/`(バイナリ・設定・`users.json`)、`.../scratchpad/otp/`(MFA 検証用スクリプト)
-- すべて **ローカル(HTTP, :8080)での検証用構成**です。本番利用時は「9. 本番化の注意」を必ず確認してください。
+- すべて **ローカル(HTTP, :8080)での検証用構成**です。本番利用時は「10. 本番化の注意」を必ず確認してください。
 
 ---
 
@@ -20,6 +20,8 @@ Caddy 用認証プラグイン [caddy-security](https://github.com/greenpau/cadd
 | 初期パスワードの変更 | プロフィール画面から変更可。旧PWは無効、新PWで通過 |
 | TOTP(認証アプリ)登録とログイン | 成功。コードなし・誤コードは拒否 |
 | 認証アプリ紛失時の復旧 | `users.json` の `mfa_tokens` を空にして復旧できた |
+| MFA 必須化(`require mfa`)と新規ユーザー | 検証済み。パスワード後に強制登録画面へ誘導され、登録するまで入れない |
+| 必須化中の紛失復旧 | `mfa_tokens` を空にすると強制登録画面に戻り、再登録で復旧 |
 | 別の管理者が UI から他ユーザーの MFA を解除 | **未確認**(管理用 UI は見当たらず) |
 
 ---
@@ -219,15 +221,67 @@ EOF
 
 復旧後、本人が認証アプリを再登録する。
 
+MFA を**必須化している場合**は、`mfa_tokens` を空にしたあとの最初のログインで、パスワードだけで入れるのではなく**強制登録画面**(9章)に進む。本人が認証アプリを再登録するまで保護対象には入れない(検証済み)。
+
 ### 8.3 未確認事項
 
 - 別の管理者が UI から他ユーザーの MFA 登録を解除できるか(ポータルのナビに「Users」等の管理画面は見当たらなかった)
 - 管理者が複数いる場合の復旧フロー(今回は管理者1人の環境のみ)
-- MFA を**必須化**する設定(未登録ユーザーの扱い)
+- MFA の連続失敗によるロックアウトの閾値・解除方法(ソース上は `account temporarily locked due to too many failed MFA attempts` が存在するが、動作は未確認)
 
 ---
 
-## 9. 本番化の注意
+## 9. MFA の必須化
+
+### 9.1 設定
+
+ポータルに `transform user` を追加する。
+
+```caddyfile
+authentication portal myportal {
+	...
+	transform user {
+		match any        # 全員に適用(条件で絞ることも可)
+		require mfa      # password / mfa / totp / u2f が指定可
+	}
+}
+```
+
+- `mfa` は認証アプリ・パスキーのどちらでも可、`totp` は認証アプリ限定、`u2f` はパスキー限定。
+- `require auth challenges <method>...` の書式もある。
+
+### 9.2 新規ユーザー(MFA 未登録)の挙動【検証済み】
+
+1. ユーザー名 → パスワードの認証は通る。
+2. その直後に「Your session requires multi-factor authentication. However, you do not have a second factor authentication method configured.」という**登録画面**が出る(選択肢: Authenticator App / Hardware Token)。
+3. 登録を終えるまで `/app` など保護対象には入れず、ログイン画面に戻される。
+4. 登録後は、毎回「パスワード → 6桁コード」が必要になる。
+
+| 状況 | 結果 |
+|---|---|
+| MFA 未登録でパスワードのみ | 強制登録画面。`/app` には入れない |
+| 登録後・コードなし | `/app` に入れない |
+| 登録後・誤コード | 「Your session failed to meet authorization requirements」で拒否 |
+| 登録後・正しいコード | `/app` が「protected OK」 |
+| `mfa_tokens` を空にしたあと(8.2) | 再び強制登録画面に戻る |
+
+### 9.3 強制登録画面の仕様(自動化する場合の注意)
+
+- 登録 URL は `/auth/sandbox/<id>/mfa-app-register`。入力項目は `label` / `comment` / `secret` / `passcode` など。
+- **Get QR Code** を押すと、QR 画像の URL(`/auth/sandbox/<id>/mfa-app-barcode/<Base64>`)の末尾に otpauth URI が Base64 で入る。ここから `secret=` を取り出せば、実際の TOTP 鍵になる。
+- `passcode` 入力欄は画面上は非表示(`isVisible=false`)のため、Playwright の `fill` はタイムアウトする。値を直接設定してフォームを `requestSubmit()` した。
+- 登録の POST 直後の応答は 401「Unauthorized」だったが、`users.json` には TOTP が保存されており、再ログインで正常にコード認証できた(UI 上の見え方が不親切なだけで、登録は成功している)。
+- ログイン中の MFA チェックポイントで追加登録できるのは、要素が1つも無いアカウントだけ(ソースコメントより)。すでに登録済みだと「verify an existing MFA factor before adding another」で拒否される。登録後の追加は、ログイン済みの `/auth/profile/` から行う。
+
+### 9.4 運用上の注意
+
+- 既存の管理者も、次回ログインで MFA 未登録なら強制登録画面に誘導される。**必須化の前に、管理者の認証アプリ(できれば2台)を登録しておく**。
+- 認証アプリを紛失した場合は 8.2 の復旧後、強制登録画面から再登録する。
+- 検証で `caddy validate` を環境変数なしで実行すると、その時点で `users.json` が既定ユーザー(`webadmin`)で作られる。初期ユーザーを `AUTHP_ADMIN_*` で作りたい場合は、**環境変数を設定した状態で最初に起動する**こと(検証ミスで一度発生)。
+
+---
+
+## 10. 本番化の注意
 
 - `cookie insecure on` は HTTP 検証用。**HTTPS 運用では削除**する。
 - `crypto key sign-verify` / `crypto key verify` の鍵は検証用の値を使い回さず、ランダムに生成して安全に保管する。
@@ -238,13 +292,13 @@ EOF
 
 ---
 
-## 10. 検証で使ったもの(参考)
+## 11. 検証で使ったもの(参考)
 
 | 項目 | 内容 |
 |---|---|
 | ポート | `:8080`(`/auth*` がポータル、`/app*` が保護対象) |
 | テストユーザー | `testuser`(検証用。値は本書に記載しない。本番で使わない) |
-| 主なスクリプト | `pw2.js`(パスワード変更)、`reg5.js`(TOTP登録)、`login.js`(MFAログイン確認) |
+| 主なスクリプト | `pw2.js`(パスワード変更)、`reg5.js`(TOTP登録)、`login.js`(MFAログイン確認)、`req1.js`〜`req3.js` / `login3.js`(MFA必須化の検証) |
 | 取得した画像 | プロフィール、パスワード変更ダイアログ、MFA 登録の各画面(スクラッチパッド内) |
 
 > 検証スクリプトやスクリーンショットは一時ディレクトリ(スクラッチパッド)にあり、このリポジトリには含まれていません。必要なら別途取り込めます。
