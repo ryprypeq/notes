@@ -185,7 +185,8 @@ curl でログインを再現する場合は上記に従う(JSON で `password` 
 ### 7.1 概要
 
 - 「Add authenticator app」は Google Authenticator などの **TOTP(RFC 6238)** 対応アプリを2段階認証として登録する機能。
-- Google Authenticator は個人利用なら無料。Microsoft Authenticator / Authy / Aegis / 2FAS なども利用可(TOTP 対応なら何でも可)。サーバー側(caddy-security)にも追加料金なし。
+- Google Authenticator は無料のアプリ(iOS / Android)で、利用者側の課金は知られていない。「個人利用に限る」といった区別は確認できていない(アプリストアの現在の表示と利用規約は別途確認のこと)。Microsoft Authenticator / Authy / Aegis / 2FAS なども利用可(TOTP 対応なら何でも可)。
+- サーバー側は、TOTP が公開規格(RFC 6238)で、caddy-security もオープンソースのため、この機能に追加の費用はかからない。
 - 「Add passkey」は WebAuthn / U2F(指紋・顔認証、YubiKey 等)で、別方式。
 
 ### 7.2 登録手順(UI)
