@@ -5,7 +5,7 @@ Caddy 用認証プラグイン [caddy-security](https://github.com/greenpau/cadd
 - 確認日: 2026-11-21
 - 環境: Linux (cloud container) / Go 1.24.7 / Caddy v2.11.9 / Playwright (Chromium)
 - 作業ディレクトリ: スクラッチパッド `.../scratchpad/cs/`(バイナリ・設定・`users.json`)、`.../scratchpad/otp/`(MFA 検証用スクリプト)
-- すべて **ローカル(HTTP, :8080)での検証用構成**です。本番利用時は「10. 本番化の注意」を必ず確認してください。
+- すべて **ローカル(HTTP, :8080)での検証用構成**です。本番利用時は「11. 本番化の注意」を必ず確認してください。
 
 ---
 
@@ -22,6 +22,7 @@ Caddy 用認証プラグイン [caddy-security](https://github.com/greenpau/cadd
 | 認証アプリ紛失時の復旧 | `users.json` の `mfa_tokens` を空にして復旧できた |
 | MFA 必須化(`require mfa`)と新規ユーザー | 検証済み。パスワード後に強制登録画面へ誘導され、登録するまで入れない |
 | 必須化中の紛失復旧 | `mfa_tokens` を空にすると強制登録画面に戻り、再登録で復旧 |
+| ログイン後のアプリ選択(ポータルのメニュー) | 検証済み。`ui link` で表示、ロールで出し分け(管理者のみ確認) |
 | 別の管理者が UI から他ユーザーの MFA を解除 | **未確認**(管理用 UI は見当たらず) |
 
 ---
@@ -185,7 +186,13 @@ curl でログインを再現する場合は上記に従う(JSON で `password` 
 ### 7.1 概要
 
 - 「Add authenticator app」は Google Authenticator などの **TOTP(RFC 6238)** 対応アプリを2段階認証として登録する機能。
-- Google Authenticator は無料のアプリ(iOS / Android)で、利用者側の課金は知られていない。「個人利用に限る」といった区別は確認できていない(アプリストアの現在の表示と利用規約は別途確認のこと)。Microsoft Authenticator / Authy / Aegis / 2FAS なども利用可(TOTP 対応なら何でも可)。
+- **Google Authenticator の料金(2026-11-21 時点の調査)**
+  - 利用者側は**無料**。Apple App Store の掲載は「Free」(価格表示で確認)。Android(Google Play)は掲載ページそのものは確認できておらず、二次情報(Gizmodo の案内)で無料とされている。
+  - 有料プランやアプリ内課金は見つからなかった。「個人利用は無料、業務利用は有料」といった**区別も確認できなかった**(業務で全員に使わせる場合は、アプリストアの掲載と利用規約を最終確認のこと)。
+  - Google アカウントでのログインは任意。ログインするとコードが端末間で同期され(Android 6.0 以上 / iOS 4.0 以上)、ログインしない場合は「Transfer codes → Export codes」の QR で新端末へ移せる。オフラインでもコードは生成できる。
+  - **名前の似た別アプリに注意**: 「Authenticator」を名乗るサードパーティ製アプリには、アプリ内課金のある有料版がある。公式の Google Authenticator とは別物なので、提供元(Google LLC)を確認してからインストールする。
+  - 参考: [Get verification codes with Google Authenticator(Google アカウント ヘルプ)](https://support.google.com/accounts/answer/1066447) / [App Store の Google Authenticator](https://apps.apple.com/us/app/google-authenticator/id388497605)
+- Microsoft Authenticator / Authy / Aegis / 2FAS なども利用可(TOTP 対応なら何でも可)。
 - サーバー側は、TOTP が公開規格(RFC 6238)で、caddy-security もオープンソースのため、この機能に追加の費用はかからない。
 - 「Add passkey」は WebAuthn / U2F(指紋・顔認証、YubiKey 等)で、別方式。
 
@@ -392,7 +399,54 @@ authentication portal myportal {
 
 ---
 
-## 10. 本番化の注意
+## 10. ログイン後に飛べるアプリの選択(ポータルのメニュー)
+
+ログイン後のポータル(`/auth/portal`)に、アプリへのリンク(メニュー)を並べられる。ユーザーの属性(ロール等)ごとに出し分けも可能。
+
+### 10.1 設定(`transform user` の `ui link`)
+
+```caddyfile
+authentication portal myportal {
+	...
+	transform user {
+		match realm local                       # ローカルDBの全ユーザー
+		ui link "Wiki" /wiki/ icon "las la-book"
+		ui link "Dashboard" /dash/ icon "las la-chart-line"
+	}
+	transform user {
+		match role authp/admin                  # 管理者だけに出す
+		ui link "Admin Console" /admin/ icon "las la-cog"
+	}
+	transform user {
+		match role authp/user                   # 一般ユーザーだけに出す
+		ui link "User-only App" /useronly/ icon "las la-user"
+	}
+}
+```
+
+- 書式: `ui link <title> <url> [icon <class>] [target_blank]`。`icon` は Line Awesome のクラス名。`target_blank` を付けると別タブで開く。
+- `<url>` は同じ Caddy 上のパスでも、外部 URL でもよい。
+- `match` の条件(ロールなど)に合うユーザーにだけ、そのリンクが出る。
+
+### 10.2 検証結果(管理者 `demo` でログイン)
+
+![ポータルのアプリ一覧](images/40-portal-app-links.png)
+
+| 項目 | 結果 |
+|---|---|
+| 表示されたリンク | Wiki / Dashboard / Admin Console(+ 標準の User Profile / Sign Out) |
+| 表示されなかったリンク | User-only App(`authp/user` のみ対象のため、管理者には出ない) |
+| リンクをクリック | `/wiki/` に遷移し、保護ページが表示された(認証済みなので 200) |
+
+ロールによる出し分けは、管理者での表示結果(Admin Console は出る、User-only App は出ない)で確認した。
+
+### 10.3 重要な注意: メニューは「見せるかどうか」だけ
+
+- `ui link` は**メニューの表示**を制御するだけで、アクセス制御ではない。リンクを出さなくても、URL を直接開けば到達できる。
+- 実際に守るのは `authorize with <policy>` と、その `allow roles ...` の設定。たとえば管理者専用アプリには `allow roles authp/admin` のポリシーを別に用意して使う(上の検証では `adminonly` ポリシーを `/admin*` に適用)。
+- 検証は管理者アカウントのみ。**一般ユーザー(`authp/user`)でのメニュー表示と、`/admin/` が拒否されること**は、この環境では未確認。
+
+## 11. 本番化の注意
 
 - `cookie insecure on` は HTTP 検証用。**HTTPS 運用では削除**する。
 - `crypto key sign-verify` / `crypto key verify` の鍵は検証用の値を使い回さず、ランダムに生成して安全に保管する。
@@ -403,7 +457,7 @@ authentication portal myportal {
 
 ---
 
-## 11. 検証で使ったもの(参考)
+## 12. 検証で使ったもの(参考)
 
 | 項目 | 内容 |
 |---|---|
