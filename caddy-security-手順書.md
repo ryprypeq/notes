@@ -120,6 +120,28 @@ export AUTHP_ADMIN_SECRET='<初期パスワード>'
 
 curl でログインを再現する場合は上記に従う(JSON で `password` を送ると `unknown field "password"` で 400)。ブラウザなら画面どおりに操作すれば通る。
 
+### 画面イメージ
+
+**① 未認証で `/app` に入ると、ログイン画面(ユーザー名またはメール)へ飛ばされる**
+
+![ログイン画面(ユーザー名)](images/01-login-username.png)
+
+**② ユーザー名を入れて Proceed を押すと、パスワード画面になる**
+
+![ログイン画面(パスワード)](images/02-login-password.png)
+
+**③ 誤ったパスワードは 401。「Authentication Failed」が出て、`/app` には入れない**
+
+![誤パスワードのエラー](images/03-login-wrong-password.png)
+
+**④ 正しいパスワードで認証後のポータル(`/auth/portal`)**
+
+![認証後のポータル](images/04-portal.png)
+
+**⑤ 認証後は保護対象の `/app` が表示される(「protected OK」)**
+
+![保護ページ /app](images/05-app-protected-ok.png)
+
 ---
 
 ## 6. パスワード変更(初期パスワードからの変更)
@@ -131,6 +153,24 @@ curl でログインを再現する場合は上記に従う(JSON で `password` 
 3. 「現在のパスワード」「新しいパスワード」「新しいパスワード(確認)」の3欄を入力して保存
    - 新パスワードは 8〜254 文字、2回分が一致していること
 4. 「Completed successfully」が表示されれば完了
+
+### 画面イメージ
+
+**① `/auth/profile/` の Dashboard。ユーザー情報と「Change password」ボタンがある**
+
+![プロフィールのダッシュボード](images/06-profile-dashboard.png)
+
+**② 「Change password」を押すと、3つの入力欄のダイアログが開く**
+
+![パスワード変更ダイアログ](images/07-change-password-dialog.png)
+
+**③ 現在のパスワードと、新しいパスワード(2回)を入力する**
+
+![入力済みダイアログ](images/08-change-password-filled.png)
+
+**④ 「Completed successfully.」が出れば完了**
+
+![変更完了](images/09-change-password-success.png)
 
 検証結果: 変更後、旧パスワードではパスワード画面から先へ進めず、新パスワードで `/app` に到達した。
 
@@ -159,6 +199,36 @@ curl でログインを再現する場合は上記に従う(JSON で `password` 
 
 登録完了後、再ログインを求められる。
 
+### 画面イメージ(登録ウィザード)
+
+**① Step 1 Metadata。Title と Secret を入れる画面**
+
+![ウィザード Step1 初期](images/10-mfa-wizard-step1-empty.png)
+
+**② Title を入力し、Generate で秘密鍵を生成する**
+
+![ウィザード Step1 入力後](images/11-mfa-wizard-step1-generated.png)
+
+**③ Step 2 Registration。QR コードを認証アプリで読み取り、6桁コードを入力して Verify**
+
+![ウィザード Step2 QR](images/12-mfa-wizard-step2-registration.png)
+
+**④ 「Completed successfully.」が出れば検証OK。Next へ**
+
+![検証完了](images/13-mfa-wizard-step2-verified.png)
+
+**⑤ Step 3 Tags(任意)**
+
+![ウィザード Step3](images/14-mfa-wizard-step3-tags.png)
+
+**⑥ Step 4 Review。Status が Verified であることを確認して Create**
+
+![ウィザード Step4](images/15-mfa-wizard-step4-review.png)
+
+**⑦ 登録後は再ログインを求められる**
+
+![登録後の再ログイン](images/16-mfa-created-relogin.png)
+
 ### 7.3 Playwright で自動化する場合の注意
 
 - 画面に表示される secret 文字列は、**ASCII 文字列を Base32 化した値**が実際の TOTP 鍵になる(QR の otpauth URI の `secret=` がその値)。コード生成側(otplib など)にはこの変換後の値を渡すこと。表示文字列をそのまま鍵にすると「Unable to complete this request」で Verify に失敗する。
@@ -174,6 +244,28 @@ curl でログインを再現する場合は上記に従う(JSON で `password` 
 | 正しい TOTP コード | `/auth/portal` に着地し `/app` が 200 |
 
 パスワード認証後に「Authenticator App / Passcode / Verify」画面が出て、そこで6桁コードを入力する。
+
+### 画面イメージ
+
+**① パスワード認証後、「Authenticator App / Passcode」画面で6桁コードを入力する**
+
+![コード入力画面](images/17-mfa-passcode-prompt.png)
+
+**② 誤ったコードは拒否される**
+
+![誤コード](images/18-mfa-wrong-code.png)
+
+**③ 正しいコードでポータルに入れる**
+
+![MFA ログイン後のポータル](images/19-mfa-login-portal.png)
+
+**④ `/app` が「protected OK」**
+
+![MFA 後の /app](images/20-mfa-app-protected-ok.png)
+
+**⑤ 登録後のプロフィール。Authenticators が 1 になる**
+
+![MFA 登録後のプロフィール](images/21-profile-after-mfa.png)
 
 ### 7.5 MFA の保存場所
 
@@ -257,6 +349,24 @@ authentication portal myportal {
 3. 登録を終えるまで `/app` など保護対象には入れず、ログイン画面に戻される。
 4. 登録後は、毎回「パスワード → 6桁コード」が必要になる。
 
+### 画面イメージ(強制登録)
+
+**① パスワード認証の直後に出る登録画面。Authenticator App か Hardware Token を選ぶ**
+
+![強制登録の選択画面](images/30-mfa-required-register-chooser.png)
+
+**② Authenticator App を選ぶと、ラベル・コメントの入力画面(Step 1)**
+
+![強制登録フォーム](images/31-mfa-required-register-form.png)
+
+**③ 「Get QR Code」で QR が出る。認証アプリで読み取り、6桁コードを入力して登録する**
+
+![強制登録 QR](images/32-mfa-required-register-qr.png)
+
+**④ 登録直後は「Unauthorized」と出るが、登録は保存されている。再ログイン後はコード認証に進む**
+
+![登録直後の画面](images/33-mfa-required-after-register.png)
+
 | 状況 | 結果 |
 |---|---|
 | MFA 未登録でパスワードのみ | 強制登録画面。`/app` には入れない |
@@ -301,4 +411,4 @@ authentication portal myportal {
 | 主なスクリプト | `pw2.js`(パスワード変更)、`reg5.js`(TOTP登録)、`login.js`(MFAログイン確認)、`req1.js`〜`req3.js` / `login3.js`(MFA必須化の検証) |
 | 取得した画像 | プロフィール、パスワード変更ダイアログ、MFA 登録の各画面(スクラッチパッド内) |
 
-> 検証スクリプトやスクリーンショットは一時ディレクトリ(スクラッチパッド)にあり、このリポジトリには含まれていません。必要なら別途取り込めます。
+> 画面イメージは `images/` に格納している(1000×640、検証用ユーザー `demo` / `newuser` の画面)。QR コードは検証環境限りの使い捨ての鍵で、本番では使っていない。検証スクリプトは一時ディレクトリ(スクラッチパッド)にあり、このリポジトリには含まれていない。
