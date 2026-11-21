@@ -5,7 +5,7 @@ Caddy 用認証プラグイン [caddy-security](https://github.com/greenpau/cadd
 - 確認日: 2026-11-21
 - 環境: Linux (cloud container) / Go 1.24.7 / Caddy v2.11.9 / Playwright (Chromium)
 - 作業ディレクトリ: スクラッチパッド `.../scratchpad/cs/`(バイナリ・設定・`users.json`)、`.../scratchpad/otp/`(MFA 検証用スクリプト)
-- すべて **ローカル(HTTP, :8080)での検証用構成**です。本番利用時は「11. 本番化の注意」を必ず確認してください。
+- すべて **ローカル(HTTP, :8080)での検証用構成**です。本番利用時は「12. 本番化の注意」を必ず確認してください。
 
 ---
 
@@ -22,7 +22,9 @@ Caddy 用認証プラグイン [caddy-security](https://github.com/greenpau/cadd
 | 認証アプリ紛失時の復旧 | `users.json` の `mfa_tokens` を空にして復旧できた |
 | MFA 必須化(`require mfa`)と新規ユーザー | 検証済み。パスワード後に強制登録画面へ誘導され、登録するまで入れない |
 | 必須化中の紛失復旧 | `mfa_tokens` を空にすると強制登録画面に戻り、再登録で復旧 |
-| ログイン後のアプリ選択(ポータルのメニュー) | 検証済み。`ui link` で表示、ロールで出し分け(管理者のみ確認) |
+| ログイン後のアプリ選択(ポータルのメニュー) | 検証済み。`ui link` で表示、ロールで出し分け(管理者・一般ユーザーの両方で確認) |
+| 一般ユーザーの追加 | 検証済み。管理 API + `caddy security local add user`。初期パスワードは自動生成され、管理者の画面にだけ出る |
+| 初回ログイン時のパスワード変更の強制 | **確認できず**(生成パスワードのまま入れた) |
 | 別の管理者が UI から他ユーザーの MFA を解除 | **未確認**(管理用 UI は見当たらず) |
 
 ---
@@ -102,6 +104,67 @@ export AUTHP_ADMIN_SECRET='<初期パスワード>'
 - 作成されるロールは `authp/admin`。
 - 既にユーザーが存在する場合、後から `AUTHP_ADMIN_SECRET` を変えても反映されない(想定。確認は未実施)。
 - パスワードの再設定は次章のとおりプロフィール画面で行う。
+
+### 4.2 ユーザーの追加(管理 API + CLI)【検証済み】
+
+環境変数で作れるのは最初の管理者だけ。2人目以降は、管理 API を有効にして `caddy security local` で追加する。
+
+**① ポータルで管理 API を有効にする**
+
+```caddyfile
+authentication portal myportal {
+	...
+	enable admin api
+}
+```
+
+**② 管理者のクライアント設定(YAML)を用意する**(Caddyfile とは別ファイル。管理者のパスワードを含むので権限 600 にする)
+
+```yaml
+base_url: http://localhost:8080/auth
+username: <管理者のユーザー名>
+realm: local
+password: <管理者のパスワード>
+```
+
+**③ ユーザーを追加する**
+
+```bash
+./caddy security local add user --config client.yaml --realm local \
+  --username member1 --email member1@example.com --name "Member One" \
+  --roles authp/user
+```
+
+出力は JSON で、**自動生成された初期パスワード**が `"password"` に入って返る(下の 4.3 参照)。
+
+**④ そのほかの操作**
+
+| 操作 | コマンド |
+|---|---|
+| 一覧 | `caddy security local list users --config client.yaml --realm local` |
+| パスワードの再発行 | `caddy security local update user ... --username <名前> --email <メール> --reset-password` |
+| ロール変更 | `... update user ... --add-roles <ロール>` / `--overwrite-roles <ロール>` |
+| 無効化・有効化 | `... update user ... --disable` / `--enable` |
+| 削除 | `caddy security local delete user ...` |
+
+- `update user` には、MFA 登録を外すための専用オプションは見当たらなかった(`--overwrite-auth-challenges` はチャレンジのルールを置き換えるもの)。MFA の解除は、引き続き 8.2 の `users.json` 編集が確実な方法。**管理 API 経由の MFA 解除は未確認**。
+
+### 4.3 初期パスワードの扱い【検証済み】
+
+**結論: 管理者が作成したユーザーには、初期パスワードを本人に伝える必要がある。**
+
+- 初期パスワードは作成時に1回だけ、**管理者の CLI 出力に表示される**。ユーザー本人にはメール等で自動送信されない(SMTP を設定していないため。メールの使われ方は 11 章を参照)。
+- 後から再表示はできない。分からなくなったら `--reset-password` で再発行する。
+- 検証では、生成されたパスワードは **8文字**だった(短い)。
+- **初回ログイン時にパスワード変更を強制する動作は確認できなかった**。`member1` は生成されたパスワードでログインすると、そのままポータルに入れた(変更画面は出ない)。したがって、本人が自発的に変更しない限り、生成パスワードを使い続けられる。
+
+運用の推奨:
+
+1. 初期パスワードは、チャットやメール本文に平文で貼らず、**パスワードマネージャーの共有・ワンタイムリンクなど、保管が残りにくい経路**で伝える。
+2. 渡すときに「**初回ログイン後すぐに `/auth/profile/` で変更すること**」を必ず案内する(6 章の手順)。
+3. 初期パスワードは短いので、MFA の必須化(9 章)と併用して、初期パスワードだけでは入れない状態にしておくと安全。
+4. 本人が初期パスワードを失くした場合は、管理者が `--reset-password` で再発行する(古いパスワードは無効になる)。
+5. `client.yaml`(管理者のパスワード入り)は権限 600 で保管し、不要になったら削除する。
 
 ---
 
@@ -438,15 +501,69 @@ authentication portal myportal {
 | 表示されなかったリンク | User-only App(`authp/user` のみ対象のため、管理者には出ない) |
 | リンクをクリック | `/wiki/` に遷移し、保護ページが表示された(認証済みなので 200) |
 
-ロールによる出し分けは、管理者での表示結果(Admin Console は出る、User-only App は出ない)で確認した。
+ロールによる出し分けは、管理者での表示結果(Admin Console は出る、User-only App は出ない)と、次の 10.4 の一般ユーザーでの結果で確認した。
 
 ### 10.3 重要な注意: メニューは「見せるかどうか」だけ
 
 - `ui link` は**メニューの表示**を制御するだけで、アクセス制御ではない。リンクを出さなくても、URL を直接開けば到達できる。
 - 実際に守るのは `authorize with <policy>` と、その `allow roles ...` の設定。たとえば管理者専用アプリには `allow roles authp/admin` のポリシーを別に用意して使う(上の検証では `adminonly` ポリシーを `/admin*` に適用)。
-- 検証は管理者アカウントのみ。**一般ユーザー(`authp/user`)でのメニュー表示と、`/admin/` が拒否されること**は、この環境では未確認。
+- 一般ユーザー(`authp/user`)でも検証済み。メニューに出ないだけでなく、`/admin/` を直接開いても 403 で拒否された(10.4)。
 
-## 11. 本番化の注意
+### 10.4 一般ユーザー(`authp/user`)での検証【検証済み】
+
+4.2 の手順で作成した `member1`(ロール `authp/user`)でログインした結果。
+
+![一般ユーザーのポータル](images/41-portal-member-links.png)
+
+| 項目 | 結果 |
+|---|---|
+| メニュー | Wiki / Dashboard / **User-only App**(+ User Profile / Sign Out)。**Admin Console は出ない** |
+| `/wiki/`・`/dash/` | 200(表示できる) |
+| `/admin/` を直接開く | **403 Forbidden**(`adminonly` ポリシーが拒否) |
+| プロフィールのロール表示 | `authp/user` |
+
+![/admin/ への直接アクセスは 403](images/42-member-admin-denied.png)
+
+- 管理者(`demo`)との違い: 管理者には Admin Console が出て、User-only App は出ない。一般ユーザーはその逆。
+- ロールで守られているのは `authorize` ポリシーの側で、メニュー(`ui link`)ではない点も、この結果で確認できた。
+
+## 11. メールアドレスの使われ方
+
+この検証構成(SMTP 未設定)では、メールは**識別・表示用の情報**としてしか使われていない。メールは1通も送られていない。
+
+**確認できたこと**
+
+- ログイン画面に「Please provide username or email address」と出る。ユーザー名の代わりにメールでも入れる作り(メールでの実ログインは未試験)。
+- `AUTHP_ADMIN_EMAIL` や `--email` で渡したアドレスは `users.json` に保存され、プロフィール画面に表示される。
+- TOTP 登録時の QR URI に、`AuthCrunch@<ラベル>:<メール>` の形で入る(認証アプリの一覧で見分けるため)。
+
+**メール送信の機能(設定が必要。未検証)**
+
+ソース上、`messaging email provider` で SMTP を設定すると、次の用途のメールを送れる定義がある。
+
+```caddyfile
+messaging email provider mailer {
+	address smtp.example.com:587
+	protocol smtp
+	credentials <認証情報名>
+	sender noreply@example.com "My Portal"
+	template password_recovery /path/to/recovery.tmpl
+}
+```
+
+- テンプレート名: `password_recovery`、`registration_confirmation`、`registration_ready`、`registration_verdict`、`mfa_otp`。
+- `messaging file provider` は、送信の代わりにファイルへ書き出す形式(開発用と思われる)。
+- パスワード再設定や自己登録のメールは、**この環境では動かしていない**。
+
+**使えないこと**
+
+- メールで届くコードによる認証(email チャレンジ)は、現バージョンでは非対応(`require auth challenges` に `email` を書くとエラー)。MFA に使えるのは認証アプリとパスキー(U2F)だけ。
+
+**初期パスワードとの関係**
+
+- 管理者がユーザーを追加しても、初期パスワードのメールは自動では届かない(4.3 参照)。SMTP を設定しても、初期パスワード通知にそのテンプレートが使われるかは未確認。
+
+## 12. 本番化の注意
 
 - `cookie insecure on` は HTTP 検証用。**HTTPS 運用では削除**する。
 - `crypto key sign-verify` / `crypto key verify` の鍵は検証用の値を使い回さず、ランダムに生成して安全に保管する。
@@ -457,7 +574,7 @@ authentication portal myportal {
 
 ---
 
-## 12. 検証で使ったもの(参考)
+## 13. 検証で使ったもの(参考)
 
 | 項目 | 内容 |
 |---|---|
