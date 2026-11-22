@@ -165,6 +165,7 @@ password: <管理者のパスワード>
 2. 渡すときに「**初回ログイン後すぐに `/auth/profile/` で変更すること**」を必ず案内する(6 章の手順)。
 3. 初期パスワードは短いので、MFA の必須化(9 章)と併用して、初期パスワードだけでは入れない状態にしておくと安全。
 4. 本人が初期パスワードを失くした場合は、管理者が `--reset-password` で再発行する(古いパスワードは無効になる)。
+5. `client.yaml`(管理者のパスワード入り)は権限 600 で保管し、不要になったら削除する。
 
 ### 4.4 管理者によるパスワードのリセット【検証済み】
 
@@ -205,7 +206,50 @@ password: <管理者のパスワード>
 - リセット時に、ログイン済みのセッション(発行済みトークン)が失効するか。
 - 管理 API から MFA の登録を外す方法(`update user` に専用オプションは見当たらない)。MFA の解除は 8.2 の `users.json` 編集が確実。
 - **管理者が全員 MFA を失くした場合の復旧**は、8.2 のとおりサーバー上の `users.json` 編集になる(管理 API は管理者ログインが必要なため使えない)。
-5. `client.yaml`(管理者のパスワード入り)は権限 600 で保管し、不要になったら削除する。
+
+### 4.6 `caddy security` CLI の一覧
+
+`caddy security --help` で確認した構成(ビルドした Caddy に含まれる)。
+
+| グループ | 内容 | 検証 |
+|---|---|---|
+| `local add user` | 一般・管理者ユーザーの追加(初期パスワードを自動生成して返す) | 済 |
+| `local update user` | `--reset-password` / `--add-roles` / `--overwrite-roles` / `--disable` / `--enable` / `--overwrite-auth-challenges` | `--reset-password` のみ検証(4.4・4.5) |
+| `local delete user` | ユーザー削除 | 未検証 |
+| `local list users` / `list realms` | 一覧 | 済(`list users`) |
+| `local info realm` / `info user` | レルムのポリシー・ユーザー記録の参照(**ユーザー記録にパスワードハッシュが含まれることがある**ため取り扱い注意) | 未検証 |
+| `local reload` | ディスク上の `users.json` をレルムに再読込 | 済(下記) |
+| `local connect` | 管理者として認証し、トークンを保存 | 未検証(各コマンドが自動でログイン) |
+| `local metadata` | ポータルのサーバー情報 | 未検証 |
+| `local generate password hash` / `generate api` | パスワードハッシュ・API 認証情報をオフラインで生成 | 未検証 |
+| `identity ...` | **SQLite** ストアのパスワード ID をオフラインで管理(create / delete / enable / disable / roles / set-password) | 対象外(今回は `users.json` のローカルストア) |
+| `api-key issue` / `revoke` | SQLite の API キー | 対象外 |
+| `oauth ...` / `oidc ...` / `secrets ...` | OAuth アプリ・OIDC 署名鍵・秘密情報の管理 | 対象外 |
+| `version` | リンクされている go-authcrunch のバージョン表示 | 済(Caddy 本体は v2.11.9、プラグインは caddy-security v1.7.0 / go-authcrunch v1.6.0) |
+
+共通の前提:
+
+- `local` 系のコマンドは**稼働中のポータルの管理 API**(`enable admin api`)に接続する。`--config` に渡すクライアント YAML は Caddyfile とは別ファイルで、管理者の認証情報(MFA 付きなら `totp_secret` も)が必要(4.2・4.5)。
+- 実行には `--realm`(例: `local`)が必須。ユーザー指定は `--username` と `--email`。
+- DB ファイルを CLI が直接編集することはない(「Database files are never edited directly」)。
+- 認証情報(パスワード・TOTP 秘密鍵)を含む YAML や出力は、権限 600・保管場所に注意する。
+- **CLI には MFA 登録を外す専用コマンドは見当たらない**。MFA の解除は 8.2 の `users.json` 編集になる。
+
+#### `local reload`:Caddy を止めずに `users.json` の編集を反映する【検証済み(1回)】
+
+8.2 では「Caddy を止めてから編集」と書いたが、**稼働中に編集して `local reload` を実行すれば、再起動なしで反映できた**。
+
+```bash
+# 1. users.json を編集(対象ユーザーの mfa_tokens を空にする)
+# 2. 管理者(MFA なし、または totp_secret 付き)の認証情報で再読込
+./caddy security local reload --config admin.yaml --realm local
+```
+
+- 検証: MFA 登録済みの一般ユーザーの `mfa_tokens` を稼働中に空にして `reload` したところ、成功し(`"status": "success"`)、その後は**パスワードのみでログインできた**。ファイルは Caddy に上書きされず、編集内容が残った。
+- 注意:
+  - `reload` を使うには、**管理 API にログインできる管理者**が必要。管理者全員が MFA を失くした場合は、これは使えず、Caddy を止めてから編集して起動し直す(8.2)。
+  - 編集後・`reload` 前のログイン試行はパスワード段階で失敗していた(原因は確認できていない)。**編集したら速やかに `reload` する**こと。
+  - 1回の検証のみ。本番で行う前に、`users.json` のバックアップを取る。
 
 ---
 
@@ -399,7 +443,7 @@ curl でログインを再現する場合は上記に従う(JSON で `password` 
 
 ### 8.2 復旧手順(認証アプリを失くした場合)
 
-**検証済み**。サーバー上で `users.json` を編集する。
+**検証済み**。サーバー上で `users.json` を編集する。(Caddy を止めずに `local reload` で反映する方法は 4.6 を参照)
 
 ```bash
 # 1. Caddy を停止する(稼働中に編集すると Caddy が上書きするおそれ)
