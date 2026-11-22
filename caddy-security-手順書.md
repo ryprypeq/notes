@@ -955,6 +955,77 @@ authentication portal myportal {
 - 管理者(`demo`)との違い: 管理者には Admin Console が出て、User-only App は出ない。一般ユーザーはその逆。
 - ロールで守られているのは `authorize` ポリシーの側で、メニュー(`ui link`)ではない点も、この結果で確認できた。
 
+### 10.5 アプリごとの認可(カスタムロール)【検証済み】
+
+「どのユーザーが、どのアプリに入れるか」を、**ロール**で決める構成。10 人程度でも、ロールで管理すると、ユーザーごとの書き分けが不要になる。
+
+**設計の基本**
+
+| ロール | 意味 |
+|---|---|
+| `authp/user` | **ポータルを使うための基本ロール**(全員に付ける) |
+| `authp/admin` | 管理者(管理 API・管理用のアプリ) |
+| `app-<アプリ名>` | そのアプリへのアクセス権(例: `app-wiki`、`app-dash`) |
+
+**設定例**(アプリごとに認可ポリシーを分け、ポリシーごとに許可するロールを書く)
+
+```caddyfile
+security {
+	authentication portal myportal {
+		...
+		transform user {
+			match role app-wiki
+			ui link "Wiki" /wiki/ icon "las la-book"      # メニューも、ロールを持つ人にだけ表示
+		}
+		transform user {
+			match role app-dash
+			ui link "Dashboard" /dash/ icon "las la-chart-line"
+		}
+	}
+	authorization policy wikipol {
+		set auth url /auth/
+		crypto key verify <鍵>
+		allow roles app-wiki authp/admin       # アプリ専用ロール + 管理者
+	}
+	authorization policy dashpol {
+		set auth url /auth/
+		crypto key verify <鍵>
+		allow roles app-dash authp/admin
+	}
+}
+:8080 {
+	route /wiki* { authorize with wikipol  ... }
+	route /dash* { authorize with dashpol  ... }
+}
+```
+
+```bash
+# ユーザー作成(基本ロールと、アプリのロールを両方付ける)
+./caddy security local add user ... --roles authp/user,app-wiki
+# 後から追加・置き換え
+./caddy security local update user ... --add-roles app-dash
+./caddy security local update user ... --overwrite-roles authp/user,app-dash
+```
+
+**検証結果**(カスタムロールを付けた 4 ユーザー)
+
+| ユーザーのロール | メニュー | `/wiki/` | `/dash/` | `/admin/` |
+|---|---|---|---|---|
+| `authp/user`, `app-wiki` | Wiki | 200 | 403 | 403 |
+| `authp/user`, `app-dash` | Dashboard | 403 | 200 | 403 |
+| `authp/user`, `app-wiki`, `app-dash` | Wiki・Dashboard | 200 | 200 | 403 |
+| `authp/user`, `app-other`(どのアプリにも該当しない) | なし | 403 | 403 | 403 |
+
+**落とし穴(検証で確認)**
+
+- **カスタムロールだけでは、ポータルにログインできない。** `--roles app-wiki` だけで作ったユーザーは、パスワード認証は通るのに、ポータルに入れずログイン画面に戻された(ログには「checkpoints passed」と出るが、エラー表示はない)。**`authp/user` を基本ロールとして必ず付ける**。
+- **ロールの剥奪は、次のログイン(またはトークンの期限切れ)まで反映されない。** 管理者が `app-wiki` を剥奪しても、**剥奪前に取得済みのセッションでは `/wiki/` が 200 のまま**で、**再ログイン後に 403** になった(4.7 の管理 API と同じ性質。認可の判定が、トークンに入ったロールで行われるため)。
+  - 即座に断ちたい場合は、アカウントの無効化やパスワードのリセットを併用する(無効化の即効性は未検証)。
+  - **トークンの有効期間(`crypto default token lifetime`、既定 3600 秒)を短くすれば、遅れも短くなる**(短縮した場合の挙動は未検証)。
+- メニュー(`ui link`)は表示だけで、**守っているのは `authorize` ポリシー**(10.3)。メニューに出ないアプリも、URL を直接開けば、ポリシーで判定される(検証では 403)。
+
+---
+
 ## 11. メールアドレスの使われ方
 
 この検証構成(SMTP 未設定)では、メールは**識別・表示用の情報**としてしか使われていない。メールは1通も送られていない。
