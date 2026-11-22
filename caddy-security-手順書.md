@@ -681,6 +681,16 @@ curl でログインを再現する場合は上記に従う(JSON で `password` 
 
 - **設定項目は見当たらない。** 鍵を API で返さない設定も、鍵を暗号化して保存する設定も、このビルド(caddy-security v1.7.0 / go-authcrunch v1.6.0)では見つからなかった。
 - **上流のソースには、対策の跡がある。** 一覧の取得処理(`pkg/authn/api_fetch_user_multi_factor_authenticators.go`)に、`token.Secret = ""`(鍵を空にする処理)が**コメントアウトされたまま**残っている。登録後に鍵を返さないようにする修正は、この行の有効化(と詳細取得側の同様の処理)で実現できる見込み。
+- **caddy-security に組み込みのプラグイン(go-authcrunch の `plugins/`)も確認した。TOTP の鍵を守る機能は無かった。**
+
+| 組み込みプラグイン | 内容 | TOTP の鍵への効果 |
+|---|---|---|
+| `identity-stores/sqlite` | **パスワードのみ**のローカル ID ストア(「password-only reference」。MFA 等は非対応) | 鍵を持たない代わりに **MFA 自体が使えない**ので、解決にならない |
+| `credential-authenticators/sqlite` | API キーの検証 | 無関係 |
+| `secrets/sqlite` | アプリ設定用の秘密情報(クライアントシークレット等)の保管 | 無関係(ユーザーの TOTP 鍵は扱わない) |
+| `messaging` / `claims-enrichment` / `session-and-refresh-storage` / `cryptographic-signing` / `external-authorization` / `oauth-login-storage` / `registration-workflows` | メール送信、クレーム付与、セッション保管、署名、外部認可など | 無関係 |
+
+- **組み込みで取れる現実的な選択肢: MFA を外部 ID プロバイダーに任せる。** OIDC / OAuth2 / SAML / LDAP で認証し、MFA はそちらで行えば、**TOTP の鍵が Caddy 側(`users.json`)に一切入らない**。(**未検証**。外部の ID プロバイダーが必要で、この環境では試していない。)
 - 対策案(**いずれも未検証**):
   1. **go-authcrunch をパッチしてビルドし直す**(`xcaddy build --with github.com/greenpau/go-authcrunch=<パッチ済みのパス>`)。一覧・詳細・管理 API(`info user`)の応答で `secret` を空にする。保守の負担(上流の更新への追従)が発生する。
   2. **Caddy 側で応答を書き換える**(`replace-response` プラグインで、`/auth/api/...` の JSON の `"secret":"..."` を伏せ字にする)。フォークは不要だが、第三者プラグインの追加が必要。登録時に必要な応答(URI の中に鍵が入る)を壊さないかの確認が必要。
