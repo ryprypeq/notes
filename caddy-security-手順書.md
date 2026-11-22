@@ -234,49 +234,6 @@ realm: local
 - 管理 API から MFA の登録を**削除**する操作は無い(操作は info / add / delete / disable / enable / reset_password / add_roles / overwrite_roles / overwrite_auth_challenges のみ)。回避は 4.9、削除は 8.2 の `users.json` 編集。
 - **管理者が全員 MFA を失くした場合の復旧**は、8.2 のとおりサーバー上の `users.json` 編集になる(管理 API は管理者ログインが必要なため使えない)。
 
-### 4.9 他ユーザーの MFA はリセットできるか【検証済み】
-
-**結論: 管理者は、他ユーザーの MFA を「回避」も「削除」もできる。ただし、MFA の登録を CLI で直接削除する操作は無い。** 方法ごとの結果は次のとおり。
-
-| 方法 | MFA の登録 | 結果 |
-|---|---|---|
-| `update user ... --reset-password` | 残る | **MFA は外れない**(新パスワードでもコードが必要。4.5) |
-| `update user ... --overwrite-auth-challenges password` | **残る** | そのユーザーは**パスワードだけでログインできる**(コード入力が出ない)。MFA 必須化(9 章)が**無い**構成で有効 |
-| `users.json` の `mfa_tokens` を空にして `local reload` | **消える** | パスワードだけでログイン(必須化していれば強制登録画面。8.2・4.6) |
-| 本人が `/auth/profile/multi-factor-authenticators` で削除 | 消える | 7.6 |
-
-#### `--overwrite-auth-challenges`(ユーザーごとの認証ルール)
-
-```bash
-# パスワードだけにする(MFA のコード要求を外す)
-./caddy security local update user --config admin.yaml --realm local \
-  --username member1 --email member1@example.com --overwrite-auth-challenges password
-
-# パスワード + MFA に戻す(スペース区切りの1本のルール)
-... --overwrite-auth-challenges "password mfa"
-```
-
-検証結果(`member1`、MFA 登録済み):
-
-| 設定 | `users.json` の `auth_challenge_rules` | ログイン |
-|---|---|---|
-| (既定) | なし | パスワード + コード |
-| `password` | `["password"]` | **パスワードのみ**(MFA 登録は残ったまま) |
-| `"password mfa"`(スペース区切り) | `["password mfa"]` | パスワード + コード |
-| `"password,mfa"`(**カンマ区切り**) | `["password", "mfa"]` | **パスワードのみで入れた** |
-
-**落とし穴**
-
-- **カンマ区切りは「別々のルール(どれか1つで可)」**になり、パスワードだけで通る。「パスワード + MFA」にしたいときは、**スペース区切りの1本**(`"password mfa"`)で指定する。意図せず MFA を弱めやすい。
-- **ルールを空にして「既定に戻す」ことは CLI では不可**(`--overwrite-auth-challenges requires at least one value`)。MFA を要求する状態に戻すには、`"password mfa"` を設定する。
-- **MFA 必須化(9 章の `require mfa`)の下では、このユーザー個別の `password` ルールでは回避できなかった**。必須化のルールが優先され、コード入力が求められた。必須化の下で MFA を外すには、`mfa_tokens` を空にする(→ 強制登録画面になる)しかない。
-- **管理者は、本人の知らないうちに、特定ユーザーの MFA を無効化(回避)できる**。MFA の登録(`mfa_tokens`)は残ったまま見た目が変わらないため、気づきにくい。管理者の権限(4.7)の最小化と、変更の記録・定期的な点検(`users.json` の `auth_challenge_rules` に `password` のみのユーザーがいないか)を行う。
-
-**使い分けの目安**
-
-- 紛失したユーザーの救済(一時的に入れる): `users.json` の編集 + `local reload`(MFA 登録を消し、本人が再登録する)が基本。**必須化の下でも使える**。
-- `--overwrite-auth-challenges password` は、MFA 必須化をしていない構成で、一時的に MFA を回避する手段。使ったら、`"password mfa"` に戻すこと。ただし、本人が認証アプリを再登録しない限り、MFA の登録は古いまま。
-
 ### 4.6 `caddy security` CLI の一覧
 
 `caddy security --help` で確認した構成(ビルドした Caddy に含まれる)。
@@ -426,6 +383,50 @@ CLI(`caddy security local ...`)の仕様は次のとおり。
 - 一時ファイルの検証では、`/dev/shm` に権限 600 で作成 → 実行 → 削除まで成功した。
 - どの方法でも、**トークンファイルは管理者の資格情報と同等**。権限 600 で保管し、不要になったら削除する。
 - 秘密を平文で書く YAML(`password:` や `totp_secret:`)は、常用せず、非常用の手順に限る。
+
+
+### 4.9 他ユーザーの MFA はリセットできるか【検証済み】
+
+**結論: 管理者は、他ユーザーの MFA を「回避」も「削除」もできる。ただし、MFA の登録を CLI で直接削除する操作は無い。** 方法ごとの結果は次のとおり。
+
+| 方法 | MFA の登録 | 結果 |
+|---|---|---|
+| `update user ... --reset-password` | 残る | **MFA は外れない**(新パスワードでもコードが必要。4.5) |
+| `update user ... --overwrite-auth-challenges password` | **残る** | そのユーザーは**パスワードだけでログインできる**(コード入力が出ない)。MFA 必須化(9 章)が**無い**構成で有効 |
+| `users.json` の `mfa_tokens` を空にして `local reload` | **消える** | パスワードだけでログイン(必須化していれば強制登録画面。8.2・4.6) |
+| 本人が `/auth/profile/multi-factor-authenticators` で削除 | 消える | 7.6 |
+
+#### `--overwrite-auth-challenges`(ユーザーごとの認証ルール)
+
+```bash
+# パスワードだけにする(MFA のコード要求を外す)
+./caddy security local update user --config admin.yaml --realm local \
+  --username member1 --email member1@example.com --overwrite-auth-challenges password
+
+# パスワード + MFA に戻す(スペース区切りの1本のルール)
+... --overwrite-auth-challenges "password mfa"
+```
+
+検証結果(`member1`、MFA 登録済み):
+
+| 設定 | `users.json` の `auth_challenge_rules` | ログイン |
+|---|---|---|
+| (既定) | なし | パスワード + コード |
+| `password` | `["password"]` | **パスワードのみ**(MFA 登録は残ったまま) |
+| `"password mfa"`(スペース区切り) | `["password mfa"]` | パスワード + コード |
+| `"password,mfa"`(**カンマ区切り**) | `["password", "mfa"]` | **パスワードのみで入れた** |
+
+**落とし穴**
+
+- **カンマ区切りは「別々のルール(どれか1つで可)」**になり、パスワードだけで通る。「パスワード + MFA」にしたいときは、**スペース区切りの1本**(`"password mfa"`)で指定する。意図せず MFA を弱めやすい。
+- **ルールを空にして「既定に戻す」ことは CLI では不可**(`--overwrite-auth-challenges requires at least one value`)。MFA を要求する状態に戻すには、`"password mfa"` を設定する。
+- **MFA 必須化(9 章の `require mfa`)の下では、このユーザー個別の `password` ルールでは回避できなかった**。必須化のルールが優先され、コード入力が求められた。必須化の下で MFA を外すには、`mfa_tokens` を空にする(→ 強制登録画面になる)しかない。
+- **管理者は、本人の知らないうちに、特定ユーザーの MFA を無効化(回避)できる**。MFA の登録(`mfa_tokens`)は残ったまま見た目が変わらないため、気づきにくい。管理者の権限(4.7)の最小化と、変更の記録・定期的な点検(`users.json` の `auth_challenge_rules` に `password` のみのユーザーがいないか)を行う。
+
+**使い分けの目安**
+
+- 紛失したユーザーの救済(一時的に入れる): `users.json` の編集 + `local reload`(MFA 登録を消し、本人が再登録する)が基本。**必須化の下でも使える**。
+- `--overwrite-auth-challenges password` は、MFA 必須化をしていない構成で、一時的に MFA を回避する手段。使ったら、`"password mfa"` に戻すこと。ただし、本人が認証アプリを再登録しない限り、MFA の登録は古いまま。
 
 ---
 
