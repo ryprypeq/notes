@@ -327,6 +327,62 @@ realm: local
 4. **オフライン系のコマンド**(`local generate ...`、SQLite ストアを使う場合の `identity ...`)はポータルの認証を経由しない。後者は SQLite ファイルへのアクセス権があれば実行できるため、ファイルの権限で守る必要がある(今回の `users.json` ストアでは対象外)。
 5. `transform user` に `add role authp/admin` のような規則を書くと、**ログインしたユーザーに管理者ロールが付く**可能性がある(ソースの書式上の推測で未検証)。外部 ID プロバイダー連携でグループからロールを付与する場合も含め、管理者ロールを付ける条件は厳密にする。
 
+### 4.8 秘密鍵からのコードの作り方と、秘密情報を YAML に書かない方法【検証済み】
+
+#### (1) 保管した秘密鍵から 6 桁コードを作る
+
+登録時に控えた Setup link(`otpauth://totp/...?secret=<Base32の鍵>&...`)の **`secret=` の値(Base32)** が、TOTP の鍵。どの認証アプリでも、次のような TOTP ツールでも、この鍵から同じコードが作れる(SHA-1・6桁・30秒)。
+
+標準ライブラリだけの Python(検証済み。`totp.py`):
+
+```python
+#!/usr/bin/env python3
+import sys, hmac, hashlib, struct, time, base64
+key = (sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()).strip().replace(' ', '').upper()
+key += '=' * (-len(key) % 8)
+h = hmac.new(base64.b32decode(key), struct.pack('>Q', int(time.time()) // 30), hashlib.sha1).digest()
+o = h[-1] & 0x0F
+print('%06d' % ((struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000))
+```
+
+```bash
+python3 totp.py <Base32の鍵>        # 引数にすると履歴・ps に残るので、普段は標準入力で渡す
+echo '<Base32の鍵>' | python3 totp.py
+```
+
+- このコードは、Node の otplib が出すコードと**一致**した(同じ鍵・同じ時刻)。
+- `oathtool --totp -b <Base32の鍵>` などの既存ツールでも作れるはずだが、この環境には入っておらず**未検証**。
+- 鍵をコマンドラインに直接書くと、シェル履歴や `ps` に残る。標準入力、またはパスワードマネージャーの CLI からの受け渡しにする。
+- **同じ30秒の枠のコードは再利用できない**ことがある。連続して使うときは、次の枠まで待つ。
+
+CLI の `client.yaml` に書く `totp_secret` は、**Base32 の鍵そのものではなく、それを復号した元の文字列**を渡す必要がある(4.5)。登録画面に表示された文字列を控えていればそれを使う。Base32 の鍵しか手元にない場合は、次で戻せる(検証済み)。
+
+```bash
+python3 -c "import base64,sys; k=sys.stdin.read().strip(); print(base64.b32decode(k+'='*(-len(k)%8)).decode())" <<< '<Base32の鍵>'
+```
+
+#### (2) パスワード・TOTP を YAML に書かない
+
+CLI(`caddy security local ...`)の仕様は次のとおり。
+
+- YAML に**環境変数を展開する機能はない**。パスワードを渡す**コマンドラインオプションもない**(`ps` に残るのを避ける設計と思われる)。
+- `--config` には**権限 600 の通常ファイル**しか渡せない。権限が緩い(644 など)と `credential input must have owner-only permissions (0600)` で拒否される(検証済み)。
+- **パイプやプロセス置換(`--config <(...)`)は不可**。`input must be an existing regular file` で拒否される(検証済み)。
+- YAML には未知の項目も書けない(厳密にチェックされる)。
+
+書かずに済ませる方法は 3 つ(いずれも検証済み)。
+
+| 方法 | やり方 | 向いている場面 |
+|---|---|---|
+| **A. 対話入力** | YAML は `base_url` / `username` / `realm` だけにする。実行すると `Password:`、MFA 付きなら続けて `Authenticator code:` を聞かれる(端末が必要) | 人が手で操作する。**最も安全** |
+| **B. 一時ファイル** | メモリ上の `/dev/shm` に権限 600 で YAML を作り、使ったらすぐ削除する。中身はパスワードマネージャー等から取り出して書き込む | スクリプトから呼ぶ。ディスクに残さない |
+| **C. 保存済みトークン** | 先に `local connect --config <yaml> --token-path <ファイル>` でトークンだけ保存し、以降は最小の YAML + `--token-path` で実行 | 短時間に何度も操作する(トークンの有効期間は既定 3600 秒) |
+
+- 対話入力の検証では、`Password:` → `Authenticator code:` の順に聞かれ、パスワードと `totp.py` で作ったコードを入力して `list users` が成功した。
+- 一時ファイルの検証では、`/dev/shm` に権限 600 で作成 → 実行 → 削除まで成功した。
+- どの方法でも、**トークンファイルは管理者の資格情報と同等**。権限 600 で保管し、不要になったら削除する。
+- 秘密を平文で書く YAML(`password:` や `totp_secret:`)は、常用せず、非常用の手順に限る。
+
 ---
 
 ## 5. パスワード認証の動作確認
